@@ -1,0 +1,25 @@
+# Checkov config. Every skip is a deliberate lab trade-off with a written reason.
+# Items marked [roadmap] are listed in README "Production hardening roadmap".
+framework:
+  - terraform
+skip-check:
+  # VM extensions: ASR REQUIRES the Mobility Service extension (installed when replication is enabled).
+  - CKV_AZURE_50
+  # NIC public IPs: needed to prove failover from a browser. Standard SKU + NSG allows only the admin /32.
+  - CKV_AZURE_119
+  # --- ASR cache storage account (transient staging buffer in the source region) ---
+  # LRS by design: the cache only holds in-flight changes; durable copies are the replica disks in the DR region.
+  - CKV_AZURE_206
+  # Public network access: ASR ships cache data over the Microsoft backbone; private endpoint is [roadmap].
+  - CKV_AZURE_59
+  - CKV2_AZURE_33
+  # Queue logging: the account uses no queues.
+  - CKV_AZURE_33
+  # Blob soft-delete: ASR churns cache blobs continuously; soft-delete only adds cost here.
+  - CKV2_AZURE_38
+  # Shared Key / SAS policy: left at ASR-compatible defaults; Entra-only auth for the cache is [roadmap].
+  - CKV2_AZURE_40
+  - CKV2_AZURE_41
+  # Customer-managed keys: [roadmap]. Platform-managed encryption at rest is on by default.
+  - CKV2_AZURE_1
+soft-fail: false

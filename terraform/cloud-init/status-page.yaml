@@ -1,0 +1,60 @@
+#cloud-config
+# Installs nginx and a boot-time script that writes a status page from the
+# Azure Instance Metadata Service (IMDS). The script runs on EVERY boot, so
+# after an ASR failover the page shows the recovery region, proving where the
+# VM is actually running. Rendered by Terraform templatefile() (tier = ${tier}).
+package_update: true
+packages:
+  - nginx
+  - jq
+
+write_files:
+  - path: /usr/local/bin/dr-status-page.sh
+    permissions: "0755"
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      IMDS="http://169.254.169.254/metadata/instance/compute?api-version=2021-02-01"
+      meta=""
+      for i in $(seq 1 30); do
+        meta=$(curl -s -H "Metadata:true" --max-time 2 "$IMDS") && [ -n "$meta" ] && break
+        sleep 2
+      done
+      region=$(echo "$meta" | jq -r '.location // "unknown"')
+      vmname=$(echo "$meta" | jq -r '.name // "unknown"')
+      vmid=$(echo "$meta" | jq -r '.vmId // "unknown"')
+      booted=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      cat > /var/www/html/index.html <<EOF
+      <!doctype html><html><head><title>DR status</title></head>
+      <body style="font-family:sans-serif;margin:3rem">
+      <h1>Azure multi-region DR lab</h1>
+      <table cellpadding="6">
+      <tr><td>Tier</td><td><b>${tier}</b></td></tr>
+      <tr><td>VM name</td><td>$vmname</td></tr>
+      <tr><td>Running in region</td><td><b id="region">$region</b></td></tr>
+      <tr><td>VM ID</td><td>$vmid</td></tr>
+      <tr><td>Last boot (UTC)</td><td>$booted</td></tr>
+      </table></body></html>
+      EOF
+      # Machine-readable endpoint used by the DR drill script.
+      printf '{"tier":"%s","vm":"%s","region":"%s","vmId":"%s","bootedUtc":"%s"}\n' \
+        "${tier}" "$vmname" "$region" "$vmid" "$booted" > /var/www/html/health.json
+
+  - path: /etc/systemd/system/dr-status-page.service
+    content: |
+      [Unit]
+      Description=Write DR status page from IMDS on every boot
+      After=network-online.target nginx.service
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/local/bin/dr-status-page.sh
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - systemctl daemon-reload
+  - systemctl enable --now nginx
+  - systemctl enable --now dr-status-page.service

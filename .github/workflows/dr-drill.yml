@@ -1,0 +1,73 @@
+name: dr-drill
+
+# Runs an ASR TEST failover of the recovery plan into the isolated DR test VNet,
+# records RTO/RPO evidence, cleans up, and uploads the drill report.
+# Production is not touched. Schedule it (uncomment `schedule`) to prove DR
+# readiness continuously instead of once a year.
+#
+# Auth: GitHub OIDC -> Entra ID federated credential (no client secrets).
+# Required repo variables: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID,
+#   DR_RESOURCE_GROUP, DR_VAULT_NAME, DR_RECOVERY_PLAN, DR_TEST_NETWORK_ID
+# The identity needs "Site Recovery Contributor" on the DR resource group, plus
+# "Virtual Machine Contributor" + "Network Contributor" so ASR can create test VMs/NICs.
+
+on:
+  workflow_dispatch:
+    inputs:
+      skip_cleanup:
+        description: "Leave test VMs running for manual inspection"
+        type: boolean
+        default: false
+  # schedule:
+  #   - cron: "17 14 1 * *" # monthly, 14:17 UTC on the 1st
+
+permissions:
+  id-token: write
+  contents: read
+
+concurrency:
+  group: dr-drill
+  cancel-in-progress: false
+
+jobs:
+  drill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150
+    environment: dr-drill
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+          enable-AzPSSession: true
+
+      - name: Install Az.RecoveryServices
+        shell: pwsh
+        run: Install-Module Az.Accounts, Az.RecoveryServices -Force -Scope CurrentUser -AllowClobber
+
+      - name: Run test failover drill
+        shell: pwsh
+        env:
+          SKIP_CLEANUP: ${{ inputs.skip_cleanup }}
+        run: |
+          $params = @{
+            ResourceGroupName = '${{ vars.DR_RESOURCE_GROUP }}'
+            VaultName         = '${{ vars.DR_VAULT_NAME }}'
+            RecoveryPlanName  = '${{ vars.DR_RECOVERY_PLAN }}'
+            TestNetworkId     = '${{ vars.DR_TEST_NETWORK_ID }}'
+          }
+          if ($env:SKIP_CLEANUP -eq 'true') { $params.SkipCleanup = $true }
+          # HealthUrl is omitted: the NSG only admits your admin CIDR, not GitHub runners,
+          # so RTO here is measured to ASR job completion.
+          ./scripts/Start-DrDrill.ps1 @params
+
+      - name: Upload drill report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dr-drill-report
+          path: evidence/drills/*.md
+          if-no-files-found: warn

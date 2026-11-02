@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars (git-ignored) and fill in.
+subscription_id      = "00000000-0000-0000-0000-000000000000"
+project              = "drlab"
+primary_location     = "eastus"
+secondary_location   = "westus2"
+allowed_source_cidr  = "203.0.113.10/32" # curl -s ifconfig.me  ->  <ip>/32
+admin_ssh_public_key = "ssh-ed25519 AAAA... you@laptop"
+
+# RPO envelope
+recovery_point_retention_minutes = 1440 # keep 24h of recovery points
+app_consistent_frequency_minutes = 240  # app-consistent snapshot every 4h
