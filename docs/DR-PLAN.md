@@ -50,7 +50,7 @@ Declare a disaster and fail over when **any** of these is true and the restore E
 ## 5. Runbook: failover to West US 2
 
 ### 5a. Pre-checks (≤ 5 min)
-1. `Get-ReplicationHealth.ps1`: note each VM's RPO. This is your expected data loss.
+1. `scripts/dr-drill.sh health` (or `Get-ReplicationHealth.ps1`): note each VM's RPO. This is your expected data loss.
 2. Confirm the vault (in West US 2) is reachable. It is deliberately outside the failed region.
 
 ### 5b. Execute
@@ -96,4 +96,4 @@ Drill reports are saved in `evidence/drills/`. Any FAIL creates an action item w
 
 | Date (UTC) | Type | RTO achieved | RPO at start | Result | Report | Follow-ups |
 |---|---|---|---|---|---|---|
-| | | | | | | |
+| 2026-11-03 | Test failover (isolated VNet) | 6 min 25 s | 201 s | PASS | [drill-20261103-173851](../evidence/drills/drill-20261103-173851.md) | Add DNS/Front Door automation; schedule monthly drill |

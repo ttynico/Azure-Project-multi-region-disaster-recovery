@@ -28,9 +28,9 @@ variable "secondary_location" {
 }
 
 variable "vm_size" {
-  description = "Size for the protected VMs. B-series keeps the lab cheap; ASR supports it."
+  description = "Size for the protected VMs (also used for the DR copy, so it must be offered AND have quota in both regions). Standard_E2bs_v5 is what worked on a free-trial subscription; check with `az vm list-skus` + `az vm list-usage`."
   type        = string
-  default     = "Standard_B2s"
+  default     = "Standard_E2bs_v5"
 }
 
 variable "admin_username" {

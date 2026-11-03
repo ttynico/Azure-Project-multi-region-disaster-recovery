@@ -9,6 +9,7 @@ This project protects a two-tier Linux workload in **East US**. **Azure Site Rec
 | **Objective** | Replicate VMs, configure cross-region failover, and build a recovery plan that keeps downtime low |
 | **Stack** | Terraform (azurerm 5.x), Azure Site Recovery, Recovery Services vault, VNets/NSGs, Log Analytics, PowerShell (Az.RecoveryServices), GitHub Actions (OIDC) |
 | **Targets** | RPO ≤ 15 min · RTO ≤ 60 min (see [DR plan](docs/DR-PLAN.md)) |
+| **Achieved (drill 2026-11-03)** | **RTO 6 min 25 s** · **RPO ≈ 3.4 min** · PASS ([report](evidence/drills/drill-20261103-173851.md)) |
 | **Skills** | DR planning, multi-region architecture, ASR, IaC, DR-as-code testing, least-privilege network design |
 
 ---
@@ -75,13 +76,15 @@ terraform/
   variables.tf         inputs with validation (no 0.0.0.0/0 allowed)
   locals.tf            VM map, CIDRs, tags
   network.tf           RGs, 3 VNets, NSGs, public IPs
-  compute.tf           2x Ubuntu 22.04 VMs (app, web) + cloud-init
+  compute.tf           2x Ubuntu 22.04 VMs (app, web, Standard_E2bs_v5) + cloud-init
   site-recovery.tf     vault, cache SA, fabrics, containers, policy, mappings, replicated VMs
+  rbac.tf              vault managed identity -> cache storage roles (+ propagation wait)
   recovery-plan.tf     ordered recovery plan with manual gates
   monitoring.tf        Log Analytics + vault diagnostic settings
   outputs.tf           endpoints + ready-to-run drill command
   cloud-init/status-page.yaml
 scripts/
+  dr-drill.sh                health | drill | cleanup via az CLI only (used for the recorded drill)
   Start-DrDrill.ps1          test failover -> measure RTO -> evidence -> cleanup
   Invoke-Failover.ps1        real planned/unplanned failover + commit
   Get-ReplicationHealth.ps1  health/RPO check (non-zero exit on breach)
@@ -121,6 +124,16 @@ Connect-AzAccount
 
 ## Run a DR drill (non-disruptive)
 
+**Bash / Git Bash (recommended, uses your `az login`, reads names from `terraform output`):**
+
+```bash
+scripts/dr-drill.sh health    # both VMs must be Normal / Protected
+scripts/dr-drill.sh drill     # test failover + RTO/RPO report in evidence/drills/
+scripts/dr-drill.sh cleanup   # delete the test VMs
+```
+
+**PowerShell (Az modules):**
+
 ```bash
 terraform output -raw drill_command   # copy, then run in pwsh
 ```
@@ -157,14 +170,18 @@ terraform destroy
 
 ## Results
 
-> Fill this in from your own deployment. The screenshots and the drill report are the proof that it ran.
+Deployed, drilled, and torn down on **2026-11-03** (East US → West US 2, 2× Standard_E2bs_v5).
 
 | Metric | Target | Achieved |
 |---|---|---|
-| Initial replication time (per VM) | n/a | _TBD_ |
-| Steady-state RPO | ≤ 15 min | _TBD_ |
-| Test failover RTO (job complete) | ≤ 60 min | _TBD_ |
-| Test failover RTO (app healthy in DR) | ≤ 60 min | _TBD_ |
+| Initial replication ("Enable replication" job, per VM) | n/a | 10 min 56 s (web) / 11 min 59 s (app) |
+| Steady-state RPO at drill start | ≤ 15 min | **185–201 s (≈ 3.4 min)** |
+| Test failover RTO (ASR job, both tiers, ordered boot) | ≤ 60 min | **6 min 25 s** |
+| App healthy in DR (`/health.json` → `westus2`, new vmId) | ≤ 60 min | ✅ web VM booted in DR 5 min 48 s after start |
+| Test failover cleanup | – | Succeeded (~2 min) |
+| Teardown | 0 resources left | ✅ both resource groups deleted |
+
+Proof that it ran in the recovery region: before the drill, `/health.json` on the primary web VM returned `"region":"eastus","vmId":"47690440-…"`. During the drill, the test-failover VM returned `"vm":"vm-web-01-test","region":"westus2","vmId":"9fbbdf54-…"`, which is a different VM, built from the replicated disk.
 
 See [evidence/README.md](evidence/README.md) for the screenshot checklist.
 
@@ -183,7 +200,14 @@ See [evidence/README.md](evidence/README.md) for the screenshot checklist.
 
 ### Issues hit during my deployment
 
-> Record real issues here as you hit them: symptom → root cause → fix. This is the most valuable part of the write-up.
+| # | Symptom | Root cause | Fix |
+|---|---|---|---|
+| 1 | `SkuNotAvailable … Capacity Restrictions: Standard_B2s … not available in location 'eastus'` (409) after the vault, networks, and ASR fabric were already built | Live regional capacity shortage for B-series in East US | Partial apply is safe. Terraform kept everything that succeeded, so only the VM size needed to change. Re-plan showed only the remaining resources. |
+| 2 | Every B-series size (B1ms/B2s/B2ms) then showed `NotAvailableForSubscription` in 6 US regions; newer families (Bsv2, DSv5…) showed **quota 0** | Free-tier subscription: an allow-list of sizes plus per-family vCPU quotas. `restricted = 0` does not mean "has quota". | Checked both at once: `az vm list-skus -l <region>` (without `--all` hides blocked sizes) and ``az vm list-usage --query '[?limit != `"0"`]'`` (note: `limit` is a string). Chose **Standard_E2bs_v5**: offered and quota 10 in **both** regions, v5/SCSI (avoided NVMe-only v6 families for ASR). |
+| 3 | Enable replication failed: **error 28143** "Recovery Services vault does not have permission to access storage account" | The vault has a **system-assigned managed identity**, so ASR authenticates to the cache storage account **as that identity**, which had no roles | Added `rbac.tf`: **Contributor** + **Storage Blob Data Contributor** for the vault identity on the cache account, a 120 s `time_sleep` for Entra propagation, and `depends_on` from the replicated VMs. The Site Recovery jobs view shows `Enable replication: Failed` (11:03) then `Succeeded` (11:16). |
+| 4 | `Connect-AzAccount` never showed an account picker and returned without a context; scripts "not digitally signed" | `pwsh` hosted inside Git Bash's mintty breaks interactive auth (WAM). Files extracted from a downloaded zip carry Mark-of-the-Web. | `Unblock-File`. Then I stopped depending on Az PowerShell locally: wrote `scripts/dr-drill.sh`, which drives the ASR REST API through `az rest` with the existing `az login`. |
+| 5 | Drill script kept printing `Succeeded` and never exited | `az` on Windows emits CRLF, so the captured `"Succeeded\r"` never matched `Succeeded)` in a bash `case` | Strip `\r` from every `az … -o tsv` capture (`tr -d '\r'`). Also `MSYS_NO_PATHCONV=1` so Git Bash doesn't rewrite `/subscriptions/...` into `C:/...`. |
+| 6 | `terraform destroy` failed on the vault: `polling after Delete: context deadline exceeded` after 30 min | Vault deletion waits for ASR to finish disabling replication and purging items. It continued server-side after Terraform's timeout. | Re-ran `terraform destroy`: the vault was already gone, and the remaining resource group deleted in 17 s. Verified with `az group list --query "[?starts_with(name,'rg-drlab')]"` → empty. |
 
 ---
 
@@ -198,7 +222,7 @@ See [evidence/README.md](evidence/README.md) for the screenshot checklist.
 
 ## Cost
 
-ASR is billed per protected instance (Azure has historically included the first 31 days free per instance, so check current pricing). You also pay for replica disks, cache storage, 2× B2s VMs, public IPs, and Log Analytics ingestion. **Tear down after you collect evidence.**
+ASR is billed per protected instance (Azure has historically included the first 31 days free per instance, so check current pricing). You also pay for replica disks, cache storage, 2× VMs, public IPs, and Log Analytics ingestion. The recorded run (about 4 hours from first apply to destroy) ran entirely on free-trial credit with the spending limit on. **Tear down after you collect evidence.**
 
 ## License
 
