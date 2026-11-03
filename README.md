@@ -185,6 +185,16 @@ Proof that it ran in the recovery region: before the drill, `/health.json` on th
 
 See [evidence/README.md](evidence/README.md) for the screenshot checklist.
 
+### Screenshots
+
+| | |
+|---|---|
+| **Both VMs replicating: Healthy / Protected** | ![Replicated items](evidence/screenshots/04-replicated-items-healthy.png) |
+| **Before: web tier served from East US** | ![Primary web](evidence/screenshots/08-primary-health-json.png) |
+| **Before: app tier served from East US** | ![Primary app](evidence/screenshots/08b-primary-health-json-app.png) |
+| **ASR jobs: test failover Succeeded in 00:06:25 (and the 28143 failure → fix)** | ![Site Recovery jobs](evidence/screenshots/09-test-failover-job.png) |
+| **After: recovered VM answering from West US 2 (new vmId)** | ![DR test web](evidence/screenshots/10-drtest-health-json.png) |
+
 ## Troubleshooting
 
 ### Known pitfalls (checked against docs before deployment)
