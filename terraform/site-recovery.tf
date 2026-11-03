@@ -196,5 +196,6 @@ resource "azurerm_site_recovery_replicated_vm" "vm" {
   depends_on = [
     azurerm_site_recovery_protection_container_mapping.forward,
     azurerm_site_recovery_network_mapping.forward,
+    time_sleep.rbac_propagation,
   ]
 }
